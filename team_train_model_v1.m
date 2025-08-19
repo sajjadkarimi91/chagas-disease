@@ -1,0 +1,409 @@
+
+function team_train_model(input_directory,output_directory, verbose)
+
+if verbose>=1
+    disp('Finding Challenge data...')
+end
+
+f = 1;
+
+if f>0
+    % Find the recordings
+    records=dir(fullfile(input_directory,'**','*.hea'));
+    % records = records(1:100:end);
+    num_records = length(records);
+
+    if num_records<1
+        error('No records were provided')
+    end
+
+    if verbose>=1
+        disp('Extracting features and labels from the data...')
+    end
+
+    if ~isdir(output_directory)
+        mkdir(output_directory)
+    end
+
+
+    original_path=pwd;
+    if ~isdeployed addpath(genpath(original_path)); end
+
+    lead_names_target = {'I', 'II', 'III', 'AVR', 'AVL', 'AVF', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6'};
+    rng(42)
+    warning('off')
+
+    parfor j=1:50
+        dummy_ab(j)=rand(1);
+    end
+
+    tic
+    parfor j=1:50
+
+        if verbose>1
+            fprintf('%d/%d \n',j,num_records)
+        end
+
+        file_load = fullfile(records(j).folder,records(j).name);
+
+        header=fileread(fullfile(records(j).folder,records(j).name));
+        %
+        % if ~strcmp(pwd,records(j).folder)
+        %     cd(records(j).folder)
+        % end
+        % Get labels
+        labels(j)=get_labels(header);
+        if labels(j)==0 && rand<0.7
+            features_temp(j,:)=nan(1,118*length(lead_names_target));
+        else
+            % Extract features
+            try
+                current_features = get_features(file_load,lead_names_target);
+                features_temp(j,:)=current_features;
+            catch
+                features_temp(j,:)=nan;
+            end
+        end
+
+
+    end
+
+    ratio_selection = 0.35;
+    time_50 = toc;
+    total_records = (8000 + ratio_selection * (num_records-8000))/50 * time_50;
+    fprintf('Estimated time to complete: %f hours \n', total_records/3600)
+
+    parfor j=1:num_records
+
+        if verbose>1
+            fprintf('%d/%d \n',j,num_records)
+        end
+
+        file_load = fullfile(records(j).folder,records(j).name);
+
+        header=fileread(fullfile(records(j).folder,records(j).name));
+        %
+        % if ~strcmp(pwd,records(j).folder)
+        %     cd(records(j).folder)
+        % end
+        % Get labels
+        labels(j)=get_labels(header);
+        if labels(j)==0 && rand<(1-ratio_selection)
+            features(j,:)=nan(1,118*length(lead_names_target));
+        else
+            % Extract features
+            try
+                current_features = get_features(file_load,lead_names_target);
+                features(j,:)=current_features;
+            catch
+                features(j,:)=nan;
+            end
+        end
+
+
+    end
+
+    cd(original_path)
+    % rmpath(genpath(original_path))
+
+    % save('features_all.mat')
+
+end
+
+%%
+
+% load('features_all.mat')
+ind_fullnan = all(isnan(features),2);
+features = features(~ind_fullnan,:);
+labels = labels(~ind_fullnan);
+
+labels = labels(:);
+classes=sort(unique(labels));
+
+
+fprintf('Training the model on the data... \n')
+
+
+mn_features = median(features,1,'omitnan');
+for i=1:size(features,2)
+    isnan_idx=isnan(features(:,i));
+    features(isnan_idx,i)=mn_features(i);
+end
+
+std_features = std(features,1,'omitnan');
+
+% Normalize features
+features = (features - mn_features) ./ std_features;
+features(features>5)=5;
+features(features<-5)=-5;
+
+rng(42)
+% Number of folds for cross-validation
+K = 5;
+% cv_splits = cvpartition(length(labels), 'Kfold',k);
+cv_splits = cvpartition(labels,'Kfold',K,'stratify',true);
+
+features_all = features;
+K=1;
+for fold = 1:1
+    % Get training and testing indices for this fold
+    train_idx = training(cv_splits,1);
+    test_idx = test(cv_splits,1);
+
+    labels_train = labels(train_idx);
+    labels_test = labels(test_idx);
+
+    C = length(lead_names_target);
+    ch_features =size(features_all,2)/C;
+
+
+    for ch = 1:C
+
+        features = features_all(:,(ch-1)*ch_features+1:ch*ch_features);
+        features_train = features(train_idx,:);
+        features_test = features(test_idx,:);
+
+        % for k =1:10
+        %
+        %     features_train_1 = features_train(labels_train==1,:);
+        % features_train_0 = features_train(labels_train==0,:);
+        %     [Mdl,~,s] = ocsvm(features_train_1,StandardizeData=false,KernelScale="auto",ContaminationFraction=0.05);
+        %     [tf_test,s_test] = isanomaly(Mdl,features_train);
+        %     [spec_x,sen_y,T,auc_ocsvm(k)] = perfcurve(labels_train,s_test,1);
+        %     prc_80_ocsvm(k) = prctile(s_test,80);
+        %     features_train = features_train(s_test<prc_80_ocsvm(k),:);
+        %     labels_train = labels_train(s_test<prc_80_ocsvm(k));
+        % end
+
+        features_train_1 = features_train(labels_train==1,:);
+        features_train_0 = features_train(labels_train==0,:);
+
+        minority_sample = 3*size(features_train_1,1);
+        rand_idx = randperm(sum(labels_train==0));
+        B = floor(sum(labels_train==0)/minority_sample);
+        % Number of bootstrap samples
+        B = min(B,5);
+        for b = 1:B
+            tic
+            disp([fold,ch,b])
+
+            features_train_0_b = features_train_0(rand_idx((b-1)*minority_sample+1:b*minority_sample),:);
+            clear stat_ks
+            for f = 1:size(features,2)
+
+                x1 = features_train_1(:,f);
+                x2 = features_train_0_b(:,f);
+                [h,pval_ks,stat_ks(f)] = kstest2(x1,x2);
+
+            end
+
+            ind_features = find(stat_ks>median(stat_ks,'omitmissing'));
+
+            X_train = [features_train_1(:,ind_features); features_train_0_b(:,ind_features)];
+            Y_train = [ones(size(features_train_1,1),1); zeros(size(features_train_0_b,1),1)];
+
+
+            % Shuffle training data before training to avoid single-class mini-batches
+            numSamples = size(X_train, 1);
+            idx = randperm(numSamples);
+            X_train = X_train(idx, :);
+            Y_train = Y_train(idx, :);
+
+            L = size(features_train_0,1);
+            features_test_0_b = features_train_0(rand_idx(B*minority_sample+1:L),:);
+            Y_test_0_b = zeros(size(features_test_0_b,1),1);
+
+            label_test_chagas = labels_test==1;
+            X_test_nn = [features_test(:,ind_features); repmat(features_test(label_test_chagas,:),floor(B/2),1)];
+            Y_test_nn = [labels_test; repmat(labels_test(label_test_chagas),floor(B/2),1)]; % 0 for negative samples
+
+            X_test = [features_test(:,ind_features); features_test_0_b(:,ind_features)];
+            Y_test = [labels_test; Y_test_0_b]; % 0 for negative samples
+
+
+            numSamples = size(X_test_nn, 1);
+            idx = randperm(numSamples);
+            X_test_nn = X_test_nn(idx, :);
+            Y_test_nn = Y_test_nn(idx, :);
+
+            weihgts_train = ones(length(Y_train),1);
+            weihgts_train(Y_train==1)= sum(Y_train==0) /sum(Y_train==1);
+
+            % Train Neural Network model
+            numResponses = 2;
+            numChannels = size(X_train,2);
+            layers = [ featureInputLayer(numChannels, Normalization="zscore")
+                fullyConnectedLayer(100)
+                clippedReluLayer(1)
+                dropoutLayer(0.1)
+                fullyConnectedLayer(25)
+                leakyReluLayer(0.001)
+                fullyConnectedLayer(numResponses)
+                softmaxLayer()];
+
+            try
+                metric_nn = aucMetric(AverageType="macro");
+                options = trainingOptions("adam", ...
+                    MaxEpochs=5, ...
+                    MiniBatchSize = 512,...
+                    ValidationData={X_test_nn, categorical(Y_test_nn)},...
+                    OutputNetwork="best-validation-loss", ...
+                    Metrics= metric_nn,...
+                    InitialLearnRate=0.001, ...
+                    L2Regularization = 0.00001,...
+                    Shuffle = "every-epoch", ...
+                    Verbose= false);
+
+                nn_model = trainnet(X_train, categorical(Y_train), layers, 'crossentropy',options);
+            catch
+
+                metric_nn = aucMetric(AverageType="macro");
+                options = trainingOptions("adam", ...
+                    MaxEpochs=10, ...
+                    MiniBatchSize = 1024,...
+                    ValidationData={X_test_nn, categorical(Y_test_nn)},...
+                    OutputNetwork="best-validation-loss", ...
+                    Metrics= metric_nn,...
+                    InitialLearnRate=0.001, ...
+                    L2Regularization = 0.00001,...
+                    Shuffle = "every-epoch", ...
+                    Verbose= false);
+
+                nn_model = trainnet(X_train, categorical(Y_train), layers, 'crossentropy',options);
+
+            end
+            svm_model = fitcsvm(X_train, categorical(Y_train),'KernelFunction','linear','CacheSize','maximal','BoxConstraint',1,'KernelScale','auto');
+            compact_svm = compact(svm_model);
+            compact_svm = discardSupportVectors(compact_svm);
+            % Train Ensemble models
+
+            learnRate = [0.1 0.2];
+            numLR = numel(learnRate);
+            maxNumSplits = 2.^(3:4);
+            numMNS = numel(maxNumSplits);
+            numTrees = [20 30];
+            clear auc_tree_all
+
+            for i = 1:numel(numTrees)
+                for k = 1:numLR
+                    for j = 1:numMNS
+                        % disp([k,j])
+                        t = templateTree('MaxNumSplits',maxNumSplits(j),'Prune','on');
+                        Mdl = fitcensemble(X_train,Y_train,'Method','AdaBoostM1','NumLearningCycles',numTrees(i),...
+                            'Learners',t,'LearnRate',learnRate(k));
+                        [~,est_trgt_tree] = predict(Mdl,X_test);
+                        [~,~,~,auc_tree] = perfcurve(Y_test,est_trgt_tree(:,2),1);
+                        auc_tree_all(i,j,k) = auc_tree;
+                    end
+                end
+            end
+
+
+            [~,ind_max] = max(auc_tree_all(:));
+            [idxNumTrees,idxMNS,idxLR] = ind2sub(size(auc_tree_all),ind_max);
+
+            t = templateTree('MaxNumSplits',maxNumSplits(idxMNS),'Prune','on');
+            ens_mdl_tree = fitcensemble(X_train,Y_train,'Method','AdaBoostM1','NumLearningCycles',numTrees(idxNumTrees),...
+                'Learners',t,'LearnRate',learnRate(idxLR));
+
+            compact_tree = compact(ens_mdl_tree);
+
+            est_trgt_nn = predict(nn_model,X_test);
+            [~,est_trgt_svm] = predict(compact_svm,X_test);
+            std_svm = std(est_trgt_svm(:,2));
+
+            [~,est_trgt_tree] = predict(compact_tree,X_test);
+            std_tree = std(est_trgt_tree(:,2));
+
+            est_trgt_tree = exp(est_trgt_tree(:,2)/(3*std_tree)) ./ ( exp(est_trgt_tree(:,1)/(3*std_tree)) + exp(est_trgt_tree(:,2)/(3*std_tree)) );
+            est_trgt_svm = exp(est_trgt_svm(:,2)/(3*std_svm)) ./ ( exp(est_trgt_svm(:,1)/(3*std_svm)) + exp(est_trgt_svm(:,2)/(3*std_svm)) );
+            est_trgt_nn = est_trgt_nn(:,2);
+
+            [spec_x,sen_y,T,auc_nn] = perfcurve(Y_test,est_trgt_nn,1);
+            [spec_x,sen_y,T,auc_svm] = perfcurve(Y_test,est_trgt_svm,1);
+            [spec_x,sen_y,T,auc_tree] = perfcurve(Y_test,est_trgt_tree,1);
+
+            fused_prob = (est_trgt_nn+est_trgt_svm+est_trgt_tree)/3;
+
+            [spec_x,sen_y,T,auc_this] = perfcurve(Y_test,fused_prob,1);
+            [~,ind_max] = max((1-spec_x).*sen_y);
+            threshold_opt = T(ind_max);
+
+            classification_model(fold,ch,b).svm_model = compact_svm;
+            classification_model(fold,ch,b).nn_model = nn_model;
+            classification_model(fold,ch,b).ens_mdl_tree = compact_tree;
+            classification_model(fold,ch,b).ind_features = ind_features;
+            classification_model(fold,ch,b).mn_features = mn_features;
+            classification_model(fold,ch,b).threshold = threshold_opt;
+            classification_model(fold,ch,b).std_features = std_features;
+            classification_model(fold,ch,b).auc = auc_this;
+            classification_model(fold,ch,b).auc_nn = auc_nn;
+            classification_model(fold,ch,b).auc_svm = auc_svm;
+            classification_model(fold,ch,b).auc_tree = auc_tree;
+            classification_model(fold,ch,b).std_svm = std_svm;
+            classification_model(fold,ch,b).std_tree = std_tree;
+
+
+            if ch==1 && b==1
+                test_prob = fused_prob;
+            else
+                test_prob = test_prob + fused_prob;
+            end
+
+            toc
+        end
+
+
+    end
+    % Average the probabilities
+    test_prob_auc = test_prob/(C*B);
+    [spec_x,sen_y,T,auc_all(fold)] = perfcurve(Y_test,test_prob_auc,1);
+    [~,ind_max] = max((1-spec_x).*sen_y);
+    threshold_opt = T(ind_max);
+
+    classification_model(fold,1,1).auc_fold = auc_all(fold);
+    classification_model(fold,1,1).threshold_fold = threshold_opt;
+
+    prc_95 = prctile(test_prob_auc,95);
+    Y_test_5 = Y_test(test_prob_auc>prc_95);
+    disp(auc_all)
+    proxy_score(fold) = sum(Y_test_5==1)/sum(Y_test==1);
+    disp(proxy_score)
+    classification_model(fold,1,1).proxy_score = proxy_score(fold);
+
+end
+
+
+
+save_models(output_directory, classification_model, classes)
+
+if verbose>=1
+    fprintf('Done. \n')
+end
+
+end
+
+function save_models(output_directory, classification_model, classes)
+
+filename = fullfile(output_directory,'classification_model.mat');
+save(filename,'classification_model','classes','-v7.3');
+end
+
+function label=get_labels(header)
+
+header=strsplit(header,'\n');
+dx=header(startsWith(header,'# Chagas'));
+if ~isempty(dx)
+    dx=strsplit(dx{1},':');
+    dx=strtrim(dx{2});
+
+    if startsWith(dx,'Fa')
+        label=0;
+    else
+        label=1;
+    end
+else
+    error('# Labels missing!')
+end
+
+end
