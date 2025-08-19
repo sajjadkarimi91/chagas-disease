@@ -230,9 +230,9 @@ function team_train_model(input_directory,output_directory, verbose)
         x_all = features_test(:,ind_features(f));
     
         if  sign_score(ind_features(f))>0
-            ind_pass{f,1} = find(x_all >= prc_score(f));
+            ind_pass{f,1} = find(x_all >= prc_score(ind_features(f)));
         else
-            ind_pass{f,1} = find(x_all <= prc_score(f));
+            ind_pass{f,1} = find(x_all <= prc_score(ind_features(f)));
         end
     
         ind_pass_unique_test = unique([ind_pass_unique_test; ind_pass{f,1}]);

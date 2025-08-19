@@ -41,9 +41,9 @@ for f = 1:length(ind_features)
     x_all = features_all(:,ind_features(f));
 
     if  sign_score(ind_features(f))>0
-        ind_pass{f,1} = find(x_all >= prc_score(f));
+        ind_pass{f,1} = find(x_all >= prc_score(ind_features(f)));
     else
-        ind_pass{f,1} = find(x_all <= prc_score(f));
+        ind_pass{f,1} = find(x_all <= prc_score(ind_features(f)));
     end
 
     ind_pass_unique_test = unique([ind_pass_unique_test; ind_pass{f,1}]);
@@ -59,7 +59,8 @@ end
 fold = 1;
 ch = 1;
 
-features_test = features_all(:,ind_features);
+features_test = features_all(ind_pass_unique_test,:);
+features_test = features_test(:,ind_features);
 
 % Number of bootstrap samples
 for b = 1:B
@@ -97,11 +98,8 @@ end
 
 
 
-threshold_fold = threshold_fold + classification_model(fold,1,1).threshold_fold/K;
+threshold_fold = threshold_fold + classification_model(fold,1,1).threshold_fold;
 
-
-% Average the probabilities
-test_prob = test_prob/(C*B*K);
 
 predicted_class = test_prob>threshold_fold;
 
